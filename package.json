@@ -1,0 +1,23 @@
+{
+  "name": "memos-mcp-custom",
+  "version": "1.0.0",
+  "description": "MemOS custom MCP server (token-optimized, Chinese descriptions)",
+  "type": "module",
+  "bin": {
+    "memos-mcp-custom": "build/index.js"
+  },
+  "scripts": {
+    "start": "node build/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "dayjs": "^1.11.18",
+    "express": "^4.19.2",
+    "ts-md5": "^2.0.1",
+    "uuid": "^13.0.0",
+    "zod": "^3.23.8"
+  }
+}

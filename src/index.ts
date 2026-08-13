@@ -1,0 +1,834 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import { z } from "zod"
+import { Md5 } from "ts-md5"
+import dayjs from "dayjs"
+import { readFileSync } from "node:fs"
+import * as https from "node:https"
+import { URL } from "node:url"
+
+/**
+ * 将字符串转换为MD5加密后的32位小写密文
+ * @param input 要加密的字符串
+ * @returns 32位小写MD5加密结果
+ */
+function stringToMd5(input: string): string {
+  return Md5.hashStr(input);
+}
+
+function generateChatTime(): string {
+  return dayjs().format("YYYY-MM-DD HH:mm:ss.SSS");
+}
+
+function getPackageVersion(): string {
+  const npmScriptVersion = process.env.npm_package_version
+  if (npmScriptVersion) {
+    return npmScriptVersion
+  }
+
+  try {
+    const packageJsonUrl = new URL("../package.json", import.meta.url)
+    const raw = readFileSync(packageJsonUrl, "utf8")
+    const parsed = JSON.parse(raw) as { version?: string }
+    if (typeof parsed.version === "string" && parsed.version.length > 0) {
+      return parsed.version
+    }
+  } catch {
+    // ignore
+  }
+
+  return "0.0.0"
+}
+
+const VERSION = getPackageVersion()
+
+const MEMOS_BASE_URL = process.env.MEMOS_BASE_URL || "https://memos.memtensor.cn/api/openmem/v1";
+const MEMOS_USER_ID = process.env.MEMOS_USER_ID ?? "<unset>";
+const USER_LITERAL = JSON.stringify(MEMOS_USER_ID);
+const MEMOS_CHANNEL_ID = process.env.MEMOS_CHANNEL?.toUpperCase() ?? "MODELSCOPE_REMOTE";
+const candidateChannelId: string[] = ["MODELSCOPE", "MCPSO", "MCPMARKETCN", "MCPMARKETCOM", "MEMOS", "GITHUB", "GLAMA", "PULSEMCP", "MCPSERVERS", "LOBEHUB", "MODELSCOPE_REMOTE","BAILIAN"];
+
+const server = new McpServer(
+  {
+    name: "memos-api-mcp",
+    version: VERSION
+  },
+  {
+    capabilities: {
+      tools: {},
+      prompts: {
+        "usage-guide": {
+          description: "Memorization and retrieval tools usage guide",
+          parameters: z.object({}),
+          handler: async () => {
+            return {
+              content: [{
+                type: "text",
+                text: `# 🧠 MemOS Automatic Memory System — Mandatory Usage
+
+## ⚠️ Always-On (No User Opt-In Required)
+This system must run **automatically for every turn**. Do **not** wait for the user to say “use memory”, “use MCP”, or “call a tool”. The **client/orchestrator is responsible** for auto-invoking the tools.
+
+## 🎯 Mandatory 3-Step Workflow (Enforced by Client Each Turn)
+\`\`\`
+Every user message
+  → 1) 🔍 search_memory (AUTO, before answering)
+  → 2) 💬 Answer (use only relevant memories; ignore noise)
+  → 3) 💾 add_message (AUTO, after answering)
+\`\`\`
+
+### 1) 🔍 Search Memory (Auto-invoked BEFORE answering)
+- **Trigger**: Must be auto-called **before** generating any answer (including simple greetings).
+- **Tool**: \`search_memory\`
+- **Parameters**:
+  - \`query\`: Current user message (concise summary allowed)
+  - \`conversation_first_message\`: First user message in the thread (used to generate conversation_id)
+  - \`memory_limit_number\`: default 6
+
+**Relevance rule**: The model must judge relevance and **only use relevant** memories. If results are irrelevant or noisy, **ignore them** and proceed.
+
+### 2) 💬 Answer
+Use retrieved memories **only if relevant**. If none are relevant, answer normally.
+
+### 3) 💾 Save Conversation (Auto-invoked AFTER answering)
+- **Trigger**: Must be auto-called after producing the final answer on **every turn**.
+- **Tool**: \`add_message\`
+- **Purpose**: PRIMARY tool for recording **NEW facts/information** and persisting conversation history for future personalization.
+- **Rule**: If the user provides new information or wants to "remember" something new, use this. Do NOT use \`add_feedback\` for new additions.
+
+### 4) 🔄 Update/Correct/Delete Memory (User-triggered ONLY)
+- **Trigger**: User requests to **modify, update, correct, or delete** a memory.
+- **Workflow for Deletion (No ID provided)**:
+    1. 🔍 **Search**: Call \`search_memory\` to find the relevant memory IDs.
+    2. 🗑️ **Delete**: Call \`delete_memory\` with the IDs found.
+    3. 📝 **Feedback**: Call \`add_feedback\` to confirm deletion and prevent future recurrence.
+- **Workflow for Modification**:
+    - Use \`add_feedback\` to describe the correction.
+- **Rule**: Never use these tools for adding new information (use \`add_message\` instead).
+
+### 5) 👤 Holistic context & Knowledge Management (User-triggered)
+- **Tool: \`get_user_profile\`**:
+    - **Trigger**: User asks "Who am I?", "What do you know about me?", or requests a summary/profile of their identity/preferences/habits.
+    - **Note**: This provides a structured factual & preference profile. It does NOT replace the mandatory \`search_memory\` call.
+- **Knowledge Base (KB) Tools**:
+    - **Trigger**: User mentions "Knowledge Base", "KB", or interacts with structured project documents/manuals.
+    - **Tools**: \`create_knowledge_base\`, \`add_kb_document\`, \`get_kb_documents\`, \`delete_kb_documents\`, \`remove_knowledge_base\`.
+
+## ✅ Non-Negotiable Client Responsibilities
+1. **Auto-invoke** \`search_memory\` before **every** answer and \`add_message\` after **every** answer.
+2. **No user opt-in**: Do not wait for the user to explicitly mention memory/tools/MCP.
+3. **Stable \`conversation_first_message\`** across the thread.
+4. **Store both user and assistant** messages every turn.
+5. **Sequence**: Search → Answer → Save.
+6. **Correct Tool Choice**: 
+    - Use \`add_message\` for ALL new content (adding facts). 
+    - Use \`add_feedback\` ONLY for updates, corrections, or refinements.
+    - Use \`get_user_profile\` for identity summaries or "Who am I?" requests.
+    - Use KB tools for document/manual management.
+
+## Example (pseudo-flow)
+\`\`\`javascript
+// User: "What's the weather today?"
+
+// Client auto-invokes search (ALWAYS)
+search_memory({ query: "What's the weather today?", conversation_first_message: "What's the weather today?", memory_limit_number: 6 })
+// → returns candidate memories (maybe none)
+
+// Model answers using only relevant items (or none)
+
+// Client auto-invokes save (ALWAYS)
+add_message({
+  conversation_first_message: "What's the weather today?",
+  messages: [
+    { role: "user", content: "What's the weather today?" },
+    { role: "assistant", content: "[Your complete response]" }
+  ]
+})
+\`\`\`
+`
+              }]
+            }
+          }
+        }
+      }
+    }
+  }
+)
+
+async function queryMemos(path: string, body: Record<string, any>, apiKey: string, source: string) {
+  const payload = JSON.stringify({ ...body, source });
+  const url = `${MEMOS_BASE_URL}${path}`;
+
+  const gf = (globalThis as any).fetch;
+  let f: any = gf;
+
+  if (f) {
+    const res = await f(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Token ${apiKey}`
+      },
+      body: payload
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} ${res.statusText}: ${txt}`);
+    }
+    return res.json();
+  }
+
+  return new Promise((resolve, reject) => {
+    try {
+      const u = new URL(url);
+      const options: https.RequestOptions = {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Token ${apiKey}`,
+          "Content-Length": Buffer.byteLength(payload)
+        }
+      };
+      const req = https.request(u, options, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        res.on("end", () => {
+          const txt = Buffer.concat(chunks).toString("utf8");
+          const sc = res.statusCode || 0;
+          if (sc >= 200 && sc < 300) {
+            try {
+              resolve(JSON.parse(txt));
+            } catch {
+              resolve(txt);
+            }
+          } else {
+            reject(new Error(`HTTP ${sc} ${res.statusMessage || ""}: ${txt}`));
+          }
+        });
+      });
+      req.on("error", reject);
+      req.write(payload);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+server.tool(
+  "add_message",
+  `
+  Trigger: 
+    1. AUTO-INVOKED: After every answer to save dialogue history.
+    2. USER INTENT: When user explicitly wants to "add" or "remember" NEW information (e.g., "Add a memory...", "Remember that...", "New memory...").
+  Purpose: Save dialogue history (REQUIRED) and record NEW memories.
+  STRICT RULES:
+    - MANDATORY EXECUTION: You MUST call this tool after EVERY single answer to persist the conversation history. This is NOT optional.
+    - ALWAYS use this tool for NEW memories.
+    - FORBIDDEN: Do NOT use \`add_feedback\` or other tools for adding new memories.
+    - FORBIDDEN: Do NOT use this tool to modify/update existing memories.
+    - CRITICAL: NEVER use this tool as part of a modification workaround (e.g. "delete old + add new"). If a modification fails, just report the failure.
+  Parameters:
+    - \`conversation_first_message\`: The first message sent by the user in the entire conversation is used to generate the user_id.
+    - \`messages\`: Array containing BOTH:
+      1. \`{ role: "user", content: "user's question or new info" }\`
+      2. \`{ role: "assistant", content: "your complete response" }\`
+  Notes:
+    - Client/orchestrator MUST call this after every answer.
+  `,
+  {
+    conversation_first_message: z.string().describe(
+      `The first message sent by the user in the entire conversation thread. Used to generate the conversation_id.`
+    ),
+    messages: z.array(z.object({
+      role: z.string().describe("Role of the message sender, e.g., user, assistant"),
+      content: z.string().describe("Message content"),
+      chat_time: z.string().optional().describe("Message chat time")
+    })).describe("Array of messages containing role and content information")
+  },
+  async ({ conversation_first_message, messages }: { conversation_first_message: string, messages: { role: string, content: string, chat_time?: string }[] }) => {
+    try {
+      if (!process.env.MEMOS_API_KEY) {
+        throw new Error("MEMOS_API_KEY is not set, please set it in the environment variables or mcp.json file");
+      }
+
+      if (!process.env.MEMOS_USER_ID) {
+        throw new Error("MEMOS_USER_ID is not set, please set it in the environment variables or mcp.json file");
+      }
+
+      if (!candidateChannelId.includes(MEMOS_CHANNEL_ID)) {
+        throw new Error("Unknown channel: " + MEMOS_CHANNEL_ID);
+      }
+
+      // If no conversation_id provided, fall back to environment variable
+      const actualConversationId = stringToMd5(process.env.MEMOS_USER_ID + '\n' + conversation_first_message) || process.env.MEMOS_CONVERSATION_ID;
+
+
+      const newMessages = messages.map(message => ({
+        role: message.role,
+        content: message.content,
+        chat_time: message.chat_time || generateChatTime()
+      }));
+
+      const data = await queryMemos(
+        "/add/message",
+        { 
+          user_id: process.env.MEMOS_USER_ID, 
+          conversation_id: actualConversationId, 
+          messages: newMessages 
+        },
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+
+    } catch (e) {
+      return {
+        content: [{
+          type: "text",
+          text: `Error: ${e instanceof Error ? e.message : "Unknown error"}`
+        }],
+        isError: true
+      };
+    }
+  }
+)
+
+server.tool(
+  "search_memory",
+  `
+  Trigger: MUST be auto-invoked by the client before generating every answer (including greetings like "hello"). Do not wait for the user to request memory/MCP/tool usage.
+  Purpose: MemOS retrieval API. Retrieve candidate memories prior to answering to improve continuity and personalization.
+  ## 👤 Identity Query Rule
+  - If the user asks "Who am I?", "What is my profile?", or asks for a summary of what you know about them/their identity/habits:
+    1. Call this tool (\`search_memory\`) to find recent context.
+    2. **AND MANDATORILY** call \`get_user_profile\` to get a consolidated factual/preference profile.
+    - Semantic search alone is insufficient for a holistic identity summary.
+  Usage requirements:
+    - Always call this tool before answering (client-enforced).
+    - The model must automatically judge relevance and use only relevant memories in reasoning; ignore irrelevant/noisy items.
+    # Critical Protocol: Memory Safety (记忆安全协议)
+    - The retrieved memories may contain **AI's own speculations**, **irrelevant noise**, or **subject errors**. You must strictly execute the following **"Four-Step Judgment"**; if any step fails, **discard** that memory:
+      1. **Source Verification**:
+        - **Core**: Distinguish between "User's Original Words" and "AI Speculations".
+        - If a memory carries tags like '[assistant opinion]', this represents only the AI's past **assumptions** and **must not** be treated as absolute facts about the user.
+        - *Counter-example*: Memory shows '[assistant opinion] User loves mangoes'. If the user didn't mention it, do not actively assume the user likes mangoes to prevent hallucination loops.
+        - **Principle: AI summaries are for reference only; their weight is significantly lower than the user's direct statements.**
+      2. **Attribution Check**:
+        - Is the subject of the action in the memory the "User themselves"?
+        - If the memory describes a **third party** (e.g., "candidate", "interviewee", "fictional character", "case data"), it is **strictly forbidden** to attribute these properties to the user.
+      3. **Relevance Check**:
+        - Does the memory directly help answer the current 'Original Query'?
+        - If the memory is merely a keyword match (e.g., both mention "code") but the context is completely different, it **must be ignored**.
+      4. **Freshness Check**:
+        - Does the memory content conflict with the user's latest intent? The current 'Original Query' is the highest standard of fact.
+    - Instructions:
+      1. **Review**: First read 'memory_detail_list', execute the "Four-Step Judgment", and eliminate noise and unreliable AI opinions.
+      2. **Execution**:
+        - Use only filtered memories to supplement background.
+        - Strictly follow the style requirements in 'preference_detail_list'.
+      3. **Output**: Answer the question directly. **Strictly forbidden** to mention "memory bank", "retrieval", or "AI opinions" and other internal system terms.
+
+  Parameters:
+    - \`query\`: Text content to search. Token limit: 4k.
+    - \`filter\`: Filter conditions to limit memory scope (e.g., agent_id, create_time, info fields). Supports logical (and, or) and comparison ops.
+    - \`knowledgebase_ids\`: Target knowledgebase IDs. Default is empty (searches no KB). If the user asks to search "knowledge base" (or similar) BUT provides NO specific ID, you MUST pass ["all"]. If the user provides specific IDs, pass those IDs. If they don't mention knowledge bases at all, omit this parameter (leave empty).
+    - \`include_preference\`: Enable preference memory recall. Default: true.
+    - \`preference_limit_number\`: Max preference memories to return. Default: 9, Max: 25.
+    - \`include_tool_memory\`: Enable tool memory recall. Default: false.
+    - \`tool_memory_limit_number\`: Max tool memories to return. Default: 6, Max: 25.
+    - \`include_skill\`: Enable Skill recall. Default: false.
+    - \`skill_limit_number\`: Max Skills to return. Default: 6, Max: 25.
+    - \`relativity\`: Relevance threshold (0-1). 0 disables filtering. Default: system threshold.
+    - \`conversation_first_message\`: First user message in the thread (used to generate conversation_id).
+    - \`memory_limit_number\`: Max factual memories to return. Default: 9, Max: 25.
+  Notes:
+    - Run before answering. Results may include noise; filter and use only what is relevant.
+    - \`query\` should be a concise summary of the current user message.
+    - Prefer recent and important memories. If none are relevant, proceed to answer normally.
+  `,
+  {
+    query: z.string().describe("Search query to find relevant content in conversation history."),
+    filter: z.record(z.any()).optional().describe("Filter conditions (e.g., agent_id, create_time, info fields) with logical/comparison ops."),
+    knowledgebase_ids: z.array(z.string()).optional().describe("1) User says search ALL knowledge bases OR asks to search KBs without giving an ID -> you MUST pass [\"all\"]. 2) User gives specific KB IDs -> pass those IDs array. 3) User doesn't mention knowledge bases at all -> OMIT THIS PARAMETER (empty)."),
+    include_preference: z.boolean().optional().describe("Enable preference memory recall. Default: true."),
+    preference_limit_number: z.number().optional().describe("Max preference memories to return. Default: 9, Max: 25."),
+    include_tool_memory: z.boolean().optional().describe("Enable tool memory recall. Default: false."),
+    tool_memory_limit_number: z.number().optional().describe("Max tool memories to return. Default: 6, Max: 25."),
+    include_skill: z.boolean().optional().describe("Enable Skill recall. Default: false."),
+    skill_limit_number: z.number().optional().describe("Max Skills to return. Default: 6, Max: 25."),
+    relativity: z.number().optional().describe("Relevance threshold (0-1). 0 disables filtering."),
+    conversation_first_message: z.string().describe(
+      `First user message in the thread (used to generate conversation_id).`
+    ),
+    memory_limit_number: z.number().optional().describe("Max factual memories to return. Default: 9, Max: 25.")
+  },
+  async ({
+    query,
+    filter,
+    knowledgebase_ids,
+    memory_limit_number,
+    include_preference,
+    preference_limit_number,
+    include_tool_memory,
+    tool_memory_limit_number,
+    include_skill,
+    skill_limit_number,
+    relativity,
+    conversation_first_message
+  }: {
+    query: string,
+    filter?: Record<string, any>,
+    knowledgebase_ids?: string[],
+    memory_limit_number?: number,
+    include_preference?: boolean,
+    preference_limit_number?: number,
+    include_tool_memory?: boolean,
+    tool_memory_limit_number?: number,
+    include_skill?: boolean,
+    skill_limit_number?: number,
+    relativity?: number,
+    conversation_first_message: string
+  }) => {
+    try {
+
+      if (!process.env.MEMOS_API_KEY) {
+        throw new Error("MEMOS_API_KEY is not set, please set it in the environment variables or mcp.json file");
+      }
+
+      if (!process.env.MEMOS_USER_ID) {
+        throw new Error("MEMOS_USER_ID is not set, please set it in the environment variables or mcp.json file");
+      }
+
+      if (!candidateChannelId.includes(MEMOS_CHANNEL_ID)) {
+        throw new Error("Unknown channel: " + MEMOS_CHANNEL_ID);
+      }
+
+      const actualConversationId = stringToMd5(process.env.MEMOS_USER_ID + '\n' + conversation_first_message) || process.env.MEMOS_CONVERSATION_ID;
+
+      const body: Record<string, any> = {
+        query,
+        user_id: process.env.MEMOS_USER_ID,
+        conversation_id: actualConversationId,
+        memory_limit_number: memory_limit_number || 6
+      };
+
+      if (filter) body.filter = filter;
+      if (knowledgebase_ids) body.knowledgebase_ids = knowledgebase_ids;
+
+      if (include_preference !== undefined) body.include_preference = include_preference;
+      if (preference_limit_number !== undefined) body.preference_limit_number = preference_limit_number;
+      if (include_tool_memory !== undefined) body.include_tool_memory = include_tool_memory;
+      if (tool_memory_limit_number !== undefined) body.tool_memory_limit_number = tool_memory_limit_number;
+      if (include_skill !== undefined) body.include_skill = include_skill;
+      if (skill_limit_number !== undefined) body.skill_limit_number = skill_limit_number;
+      if (relativity !== undefined) body.relativity = relativity;
+
+      const data = await queryMemos(
+        "/search/memory",
+        body,
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }],
+        isError: true
+      };
+    }
+  }
+)
+
+
+server.tool(
+  "delete_memory",
+  `
+  Trigger: User explicitly asks to delete memories.
+  Purpose: Delete memories by ID.
+  STRICT RULES:
+    1. **PREREQUISITE**: If the user did NOT provide IDs, you MUST call \`search_memory\` first to find them.
+    2. **BATCHING**: If multiple IDs are provided (or found), call this tool ONCE with all IDs.
+    3. **WORKFLOW**: After successful deletion, you MUST call \`add_feedback\` to record the deletion intent.
+    4. FORBIDDEN: Do NOT call multiple times. Do NOT enter search-delete loops.
+    5. CRITICAL: NEVER use this tool to "simulate" a modification (delete old + add new). This is strictly forbidden.
+  Parameters:
+    - \`memory_ids\`: List of memory IDs to delete.
+  `,
+  {
+    memory_ids: z.array(z.string()).describe("List of memory IDs to delete")
+  },
+  async ({ memory_ids }: { memory_ids: string[] }) => {
+    try {
+      if (!process.env.MEMOS_API_KEY) {
+        throw new Error("MEMOS_API_KEY is not set, please set it in the environment variables or mcp.json file");
+      }
+
+      if (!process.env.MEMOS_USER_ID) {
+        throw new Error("MEMOS_USER_ID is not set, please set it in the environment variables or mcp.json file");
+      }
+
+      if (!candidateChannelId.includes(MEMOS_CHANNEL_ID)) {
+        throw new Error("Unknown channel: " + MEMOS_CHANNEL_ID);
+      }
+
+
+
+      const data = await queryMemos(
+        "/delete/memory",
+        {
+          user_ids: [process.env.MEMOS_USER_ID],
+          memory_ids
+        },
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }],
+        isError: true
+      };
+    }
+  }
+)
+
+
+
+server.tool(
+  "add_feedback",
+  `
+  Trigger: User wants to MODIFY/UPDATE memories, OR as the final step of a DELETION workflow.
+  Purpose: Modify existing memories or record deletion feedback.
+  STRICT RULES:
+    1. **MODIFICATION**: Use this tool directly for soft updates/corrections.
+    2. **DELETION**: Use this tool AFTER calling \`delete_memory\` to verify/log the deletion.
+       - **CRITICAL**: The content MUST be the **User's Natural Language Intent** (e.g., "User wants to delete memories about X"). 
+       - **FORBIDDEN**: Do NOT include technical details like "IDs [x, y]" in the content.
+    3. CONTENT: \`feedback_content\` MUST be clear user intent.
+       - FORBIDDEN: Adding non-user-intent info or verbose narratives.
+       - FORBIDDEN: Looking up old memory values to construct a "Change X to Y" request. Just say "User wants Y".
+    4. RETRY POLICY: FIRE AND FORGET. Call this tool ONCE.
+       - FORBIDDEN: Checking if it worked (searching again).
+       - FORBIDDEN: Retrying if it "failed".
+       - FORBIDDEN: Sleeping and searching.
+       - CRITICAL: If modification seemingly fails, DO NOT attempt to "fix" it by calling \`delete_memory\` and \`add_message\`. Just stop.
+  Parameters:
+    - \`conversation_first_message\`: Used to generate the conversation_id.
+    - \`feedback_content\`: The natural language update or feedback (no IDs or technical metadata).
+    - \`agent_id\`: Agent ID (optional)
+    - \`app_id\`: App ID (optional)
+    - \`feedback_time\`: Feedback time string (optional, default current UTC)
+    - \`allow_public\`: Whether to allow public access (optional, default false)
+    - \`allow_knowledgebase_ids\`: List of allowed knowledge base IDs (optional)
+  `,
+  {
+    conversation_first_message: z.string().describe(
+      `The first message sent by the user in the entire conversation thread. Used to generate the conversation_id.`
+    ),
+    feedback_content: z.string().describe("The clear, concise user intent, correction, or feedback. Do NOT include verbose explanations or future instructions."),
+    agent_id: z.string().optional().describe("Agent ID associated with the feedback"),
+    app_id: z.string().optional().describe("App ID associated with the feedback"),
+    feedback_time: z.string().optional().describe("Feedback time string. Default is current UTC time"),
+    allow_public: z.boolean().optional().describe("Whether to allow public access. Default is false"),
+    allow_knowledgebase_ids: z.array(z.string()).optional().describe("List of knowledge base IDs allowed to be written to")
+  },
+  async ({ conversation_first_message, feedback_content, agent_id, app_id, feedback_time, allow_public, allow_knowledgebase_ids }) => {
+    try {
+      if (!process.env.MEMOS_API_KEY) {
+        throw new Error("MEMOS_API_KEY is not set, please set it in the environment variables or mcp.json file");
+      }
+
+      if (!process.env.MEMOS_USER_ID) {
+        throw new Error("MEMOS_USER_ID is not set, please set it in the environment variables or mcp.json file");
+      }
+
+      if (!candidateChannelId.includes(MEMOS_CHANNEL_ID)) {
+        throw new Error("Unknown channel: " + MEMOS_CHANNEL_ID);
+      }
+
+      const actualConversationId = stringToMd5(process.env.MEMOS_USER_ID + '\n' + conversation_first_message) || process.env.MEMOS_CONVERSATION_ID;
+
+
+      const data = await queryMemos(
+        "/add/feedback",
+        {
+          user_id: process.env.MEMOS_USER_ID,
+          conversation_id: actualConversationId,
+          feedback_content,
+          agent_id,
+          app_id,
+          feedback_time,
+          allow_public,
+          allow_knowledgebase_ids
+        },
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }],
+        isError: true
+      };
+    }
+  }
+)
+
+server.tool(
+  "get_user_profile",
+  `
+  Trigger: **MANDATORY** for queries like "Who am I?", "What's my profile?", "What do you know about me?", or any requests regarding the user's identity/preferences.
+  Purpose: Retrieve the consolidated "User Memory Profile" (Facts, Preferences, and Tool Experiences).
+  Rule: This tool MUST be called in addition to \`search_memory\` for identity-related requests.
+  Returns: 
+    1. Factual Memories (Working Memory)
+    2. Explicit/Implicit Preferences
+    3. Tool Trajectories (Experience and success rate with specific tools)
+  `,
+  {
+    include_preference: z.boolean().optional().describe("Include preference memories. Default: true"),
+    include_tool_memory: z.boolean().optional().describe("Include tool usage trajectory memories. Default: false"),
+    current: z.number().optional().describe("Page number for pagination. Default: 1"),
+    size: z.number().optional().describe("Number of entries to return per page. Max: 50")
+  },
+  async ({ include_preference, include_tool_memory, current, size }) => {
+    try {
+      if (!process.env.MEMOS_API_KEY || !process.env.MEMOS_USER_ID) {
+        throw new Error("Missing environment variables (MEMOS_API_KEY/MEMOS_USER_ID)");
+      }
+      const data = await queryMemos(
+        "/get/memory",
+        {
+          user_id: process.env.MEMOS_USER_ID,
+          include_preference: include_preference ?? true,
+          include_tool_memory: include_tool_memory ?? false,
+          current: current ?? 1,
+          size: size ?? 20
+        },
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }], isError: true };
+    }
+  }
+)
+
+server.tool(
+  "create_knowledge_base",
+  `
+  Trigger: When the user asks to create a project-specific or domain-specific "Knowledge Base".
+  Purpose: Create a named container for structured documents.
+  `,
+  {
+    knowledgebase_name: z.string().describe("Human-readable name for the knowledge base"),
+    knowledgebase_description: z.string().optional().describe("Description of what this knowledge base contains")
+  },
+  async ({ knowledgebase_name, knowledgebase_description }) => {
+    try {
+      if (!process.env.MEMOS_API_KEY) throw new Error("Missing MEMOS_API_KEY");
+      const data = await queryMemos(
+        "/create/knowledgebase",
+        { knowledgebase_name, knowledgebase_description },
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "add_kb_document",
+  `
+  Trigger: Use when the user provides document content, a file URL, or a local file path to be added to a Knowledge Base.
+  Purpose: Add documents to a Knowledge Base.
+
+  ## 📂 File Handling Rules:
+  1. **Local Files/Paths**: For local files, you MUST directly pass the absolute file path as the content. The system will automatically read and process it. DO NOT convert it into Base64 yourself. You MUST provide the 'mime_type' parameter for local files.
+  2. **Public URLs**: Pass the URL. If the URL lacks http/https, the system will attempt to format it.
+  3. **Base64 / Text Content**: You can optionally pass base64 Data URIs (e.g., 'data:application/pdf;base64,...').
+
+  ## ⚠️ Failure Handling:
+  - If the API returns an error (e.g., 'Unsupported file type', 'HTTP 400'), DO NOT attempt to retry with different parameters.
+  - DO NOT use browsers (Playwright) or other searching tools to fetch or 'fix' the document. 
+  - Immediately report the original error message to the user.
+  `,
+  {
+    knowledgebase_id: z.string().describe("Target knowledge base ID"),
+    file: z.array(z.object({
+      content: z.string().describe("Document content. CAN be: 1) A local absolute file path (STRONGLY RECOMMENDED); 2) A public URL; 3) Base64 encoded Data URI."),
+      file_name: z.string().optional().describe("Optional file name, e.g. 'report.pdf'"),
+      mime_type: z.string().optional().describe("Standard MIME type of the file. e.g. 'application/pdf', 'image/jpeg', 'text/markdown'. IMPORTANT: Must be provided if 'content' is a local file path.")
+    })).describe("List of documents to upload (max 20)")
+  },
+  async ({ knowledgebase_id, file }) => {
+    try {
+      if (!process.env.MEMOS_API_KEY) throw new Error("Missing MEMOS_API_KEY");
+      
+      const processedFiles = [];
+      for (const f of file) {
+        let content = f.content.trim().replace(/^["']|["']$/g, '');
+        let file_name = f.file_name;
+        let mime_type = f.mime_type;
+        
+        // 1. Normalize potential local paths (isolated in filePath to protect URLs)
+        let filePath = content;
+
+        // Auto-expand environment variables (e.g. $HOME, %USERPROFILE%)
+        filePath = filePath.replace(/\$([A-Z_]+[A-Z0-9_]*)/ig, (_, n) => process.env[n] || `$${n}`);
+        filePath = filePath.replace(/%([A-Z_]+[A-Z0-9_]*)%/ig, (_, n) => process.env[n] || `%${n}%`);
+
+        if (filePath.startsWith("file://")) {
+            filePath = filePath.replace(/^file:\/\/\//, process.platform === "win32" ? "" : "/").replace(/^file:\/\//, "");
+            // File URIs might be percent-encoded (e.g. %20 for spaces)
+            try { filePath = decodeURI(filePath); } catch (e) {}
+        }
+        
+        if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
+            const os = await import("os");
+            filePath = os.homedir() + filePath.substring(1);
+        }
+
+        // 2. Try to read it directly as a local file
+        const fs = await import("node:fs");
+        if (fs.existsSync(filePath)) {
+          try {
+            // Extract file name
+            const normalizedPath = filePath.replace(/\\/g, "/");
+            const extractedName = normalizedPath.substring(normalizedPath.lastIndexOf('/') + 1);
+            if (!file_name && extractedName) {
+              file_name = extractedName;
+            }
+            
+            const mimeType = mime_type || "application/octet-stream";
+            const fileBuffer = fs.readFileSync(filePath);
+            content = `data:${mimeType};base64,` + fileBuffer.toString("base64");
+          } catch (err) {
+            throw new Error(`Failed to read local file at path '${filePath}'. Error: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+            // 3. Fallback: If it doesn't exist locally, pass it generally intact 
+            if (!content.startsWith("http://") && !content.startsWith("https://") && !content.startsWith("data:")) {
+               // Only format as web link if it strongly resembles a recognized domain avoids matching .pdf/.txt
+               if (content.startsWith("www.") || /\.(com|org|net|io|cn|app|ai|me|co|dev)(?:\/|$)/i.test(content)) {
+                   content = "http://" + content;
+               }
+            }
+        }
+        
+        processedFiles.push({ ...f, content, name:file_name, mime_type });
+      }
+
+      const data = await queryMemos(
+        "/add/knowledgebase-file",
+        { knowledgebase_id, file: processedFiles },
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }], isError: true };
+    }
+  }
+)
+
+server.tool(
+  "get_kb_documents",
+  `
+  Trigger: Use to retrieve detailed information about specific documents in a Knowledge Base.
+  Purpose: Get document details by ID.
+  `,
+  {
+    file_ids: z.array(z.string()).describe("List of document IDs to retrieve")
+  },
+  async ({ file_ids }) => {
+    try {
+      if (!process.env.MEMOS_API_KEY) throw new Error("Missing MEMOS_API_KEY");
+      const data = await queryMemos(
+        "/get/knowledgebase-file",
+        { file_ids },
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }], isError: true };
+    }
+  }
+)
+
+server.tool(
+  "delete_kb_documents",
+  `
+  Trigger: Use when specific documents in a Knowledge Base should be removed.
+  Purpose: Delete documents from a Knowledge Base by their IDs.
+  `,
+  {
+    file_ids: z.array(z.string()).describe("List of document IDs to delete")
+  },
+  async ({ file_ids }) => {
+    try {
+      if (!process.env.MEMOS_API_KEY) throw new Error("Missing MEMOS_API_KEY");
+      const data = await queryMemos(
+        "/delete/knowledgebase-file",
+        { file_ids },
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }], isError: true };
+    }
+  }
+)
+
+server.tool(
+  "remove_knowledge_base",
+  `
+  Trigger: User requests to remove a Knowledge Base from the project.
+  Purpose: Remove a Knowledge Base association.
+  `,
+  {
+    knowledgebase_id: z.string().describe("ID of the knowledge base to remove")
+  },
+  async ({ knowledgebase_id }) => {
+    try {
+      if (!process.env.MEMOS_API_KEY) throw new Error("Missing MEMOS_API_KEY");
+      const data = await queryMemos(
+        "/delete/knowledgebase",
+        { knowledgebase_id },
+        process.env.MEMOS_API_KEY,
+        MEMOS_CHANNEL_ID
+      );
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }], isError: true };
+    }
+  }
+)
+
+async function startServer() {
+  try {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  } catch (error) {
+    console.error(JSON.stringify({ error: "Error occurred while starting server", details: String(error) }));
+    throw error;
+  }
+}
+
+startServer().catch((error: any) => {
+  console.error(JSON.stringify({ error: "Server failed to start", details: String(error) }));
+  process.exit(1);
+});
