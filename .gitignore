@@ -1,0 +1,5 @@
+node_modules/
+tsconfig.tsbuildinfo
+*.log
+.env
+.DS_Store

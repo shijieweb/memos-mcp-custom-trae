@@ -11,11 +11,12 @@ To use this package In MCP Client, use the following configuration:
   "mcpServers": {
     "memos-api-mcp": {
       "command": "npx",
-      "args": ["-y", "@memtensor/memos-api-mcp"],
+      "args": ["-y", "github:shijieweb/memos-mcp-custom-trae#main"],
       "env": {
         "MEMOS_API_KEY": "your-api-key",
         "MEMOS_USER_ID": "your-user-id",
-        "MEMOS_CHANNEL": "the-site-where-you-are-seeing-this-document"
+        "MEMOS_CHANNEL": "MODELSCOPE_REMOTE",
+        "MEMOS_AGENT_ID": "your-agent-id"
       }
     }
   }
@@ -28,15 +29,17 @@ To use this package In MCP Client, use the following configuration:
 - `env`: Environment variables
   - `MEMOS_API_KEY`: Your Memos API key for authentication (Get your API Key in Dashboard[https://memos-dashboard.openmem.net/cn/apikeys/])
   - `MEMOS_USER_ID`: Stable per-human identifier. MUST be deterministic and non-PII, and MUST remain the same for the same person across devices/sessions. NEVER reuse across different people. DO NOT use random values, device IDs, or model/chat session IDs. Recommended: SHA-256(lowercase(trim(email))) or your SSO subject/employee ID.
-  - `MEMOS_CHANNEL`: The site where you are seeing this document. Candidate values: `MODELSCOPE`, `MCPSO`, `MCPMARKETCN`, `MCPMARKETCOM`, `GLAMA`, `PULSEMCP`, `MCPSERVERS`,`LOBEHUB`,`MEMOS`(meaning the MemOS official website), `GITHUB`(meaning this README file)
+  - `MEMOS_CHANNEL`: The platform where this MCP is running. Default: `MODELSCOPE_REMOTE`.
+  - `MEMOS_AGENT_ID`: **(Optional)** Agent ID to tag every memory write with. Used for tracking which Agent generated each memory on the cloud platform. If set, all `add_message` calls automatically include this agent_id. If not set, agent_id is omitted from writes.
 
 ### Available MCP Tools
 This package provides the following MCP tools:
 
 1. `add_message`
-   - Adds a new message to a conversation
+   - Adds a new message to a conversation. Automatically called after every answer.
    - Parameters:
-     - `conversation_id`: Unique identifier of the conversation associated with the feedback.
+     - `conversation_first_message`: First user message in the thread (used to generate conversation_id).
+     - `agent_id`: (Optional) Agent ID to associate this memory with. If `MEMOS_AGENT_ID` env var is set, this is auto-injected.
      - `messages`: Array of messages containing role and content information.
        - `role`: Role of the message sender (`user` or `assistant`).
        - `content`: Message content.

@@ -46,7 +46,8 @@ const MEMOS_BASE_URL = process.env.MEMOS_BASE_URL || "https://memos.memtensor.cn
 const MEMOS_USER_ID = process.env.MEMOS_USER_ID ?? "<unset>";
 const USER_LITERAL = JSON.stringify(MEMOS_USER_ID);
 const MEMOS_CHANNEL_ID = process.env.MEMOS_CHANNEL?.toUpperCase() ?? "MODELSCOPE_REMOTE";
-const candidateChannelId: string[] = ["MODELSCOPE", "MCPSO", "MCPMARKETCN", "MCPMARKETCOM", "MEMOS", "GITHUB", "GLAMA", "PULSEMCP", "MCPSERVERS", "LOBEHUB", "MODELSCOPE_REMOTE","BAILIAN"];
+const MEMOS_AGENT_ID = process.env.MEMOS_AGENT_ID || undefined;
+const candidateChannelId: string[] = ["MODELSCOPE", "MCPSO", "MCPMARKETCN", "MCPSERVERS", "LOBEHUB", "MODELSCOPE_REMOTE","BAILIAN"];
 
 const server = new McpServer(
   {
@@ -81,7 +82,7 @@ Every user message
 - **Trigger**: Must be auto-called **before** generating any answer (including simple greetings).
 - **Tool**: \`search_memory\`
 - **Parameters**:
-  - \`query\`: Current user message (concise summary allowed)
+  - \`query\`: A **complete, context-aware search query** constructed from the current user message PLUS conversation context. Do NOT pass raw short/ambiguous input like "ok", "那明天呢", "继续". Synthesize the query using your understanding of what the user means. E.g., user says "那明天呢" → query should be "明天天气怎么样" (not just "那明天呢").
   - \`conversation_first_message\`: First user message in the thread (used to generate conversation_id)
   - \`memory_limit_number\`: default 6
 
@@ -128,13 +129,19 @@ Use retrieved memories **only if relevant**. If none are relevant, answer normal
 
 ## Example (pseudo-flow)
 \`\`\`javascript
-// User: "What's the weather today?"
+// Turn 1: User says "What's the weather today?"
+search_memory({ query: "weather today forecast", conversation_first_message: "What's the weather today?", memory_limit_number: 6 })
+// → returns weather-related memories
 
-// Client auto-invokes search (ALWAYS)
-search_memory({ query: "What's the weather today?", conversation_first_message: "What's the weather today?", memory_limit_number: 6 })
-// → returns candidate memories (maybe none)
+// Model answers about weather and saves the conversation
 
-// Model answers using only relevant items (or none)
+// Turn 3: User says "What about tomorrow?" (short, relies on context)
+// The model should synthesize: "tomorrow weather forecast" based on context
+search_memory({ query: "tomorrow weather forecast", conversation_first_message: "What's the weather today?", memory_limit_number: 6 })
+// → now correctly finds weather memories even though the raw input is just "What about tomorrow?"
+
+// Model answers and saves
+\`\`\`
 
 // Client auto-invokes save (ALWAYS)
 add_message({
@@ -232,6 +239,7 @@ server.tool(
     - CRITICAL: NEVER use this tool as part of a modification workaround (e.g. "delete old + add new"). If a modification fails, just report the failure.
   Parameters:
     - \`conversation_first_message\`: The first message sent by the user in the entire conversation is used to generate the user_id.
+    - \`agent_id\`: Agent ID to associate this memory with (optional). Useful for multi-agent scenarios.
     - \`messages\`: Array containing BOTH:
       1. \`{ role: "user", content: "user's question or new info" }\`
       2. \`{ role: "assistant", content: "your complete response" }\`
@@ -242,13 +250,14 @@ server.tool(
     conversation_first_message: z.string().describe(
       `The first message sent by the user in the entire conversation thread. Used to generate the conversation_id.`
     ),
+    agent_id: z.string().optional().describe("Agent ID to associate this memory with (optional)"),
     messages: z.array(z.object({
       role: z.string().describe("Role of the message sender, e.g., user, assistant"),
       content: z.string().describe("Message content"),
       chat_time: z.string().optional().describe("Message chat time")
     })).describe("Array of messages containing role and content information")
   },
-  async ({ conversation_first_message, messages }: { conversation_first_message: string, messages: { role: string, content: string, chat_time?: string }[] }) => {
+  async ({ conversation_first_message, agent_id, messages }: { conversation_first_message: string, agent_id?: string, messages: { role: string, content: string, chat_time?: string }[] }) => {
     try {
       if (!process.env.MEMOS_API_KEY) {
         throw new Error("MEMOS_API_KEY is not set, please set it in the environment variables or mcp.json file");
@@ -274,10 +283,11 @@ server.tool(
 
       const data = await queryMemos(
         "/add/message",
-        { 
-          user_id: process.env.MEMOS_USER_ID, 
-          conversation_id: actualConversationId, 
-          messages: newMessages 
+        {
+          user_id: process.env.MEMOS_USER_ID,
+          conversation_id: actualConversationId,
+          agent_id: agent_id || MEMOS_AGENT_ID,
+          messages: newMessages
         },
         process.env.MEMOS_API_KEY,
         MEMOS_CHANNEL_ID
@@ -347,11 +357,11 @@ server.tool(
     - \`memory_limit_number\`: Max factual memories to return. Default: 9, Max: 25.
   Notes:
     - Run before answering. Results may include noise; filter and use only what is relevant.
-    - \`query\` should be a concise summary of the current user message.
+    - \`query\` should be a **complete, context-aware search query** constructed from your understanding of the user's intent, NOT just the raw current input. Always incorporate conversation context when the current message is short, ambiguous, or relies on prior turns.
     - Prefer recent and important memories. If none are relevant, proceed to answer normally.
   `,
   {
-    query: z.string().describe("Search query to find relevant content in conversation history."),
+    query: z.string().describe("Complete search query constructed from current message + conversation context. Must be self-contained and explicit — never just copy the raw user input if it's short/ambiguous."),
     filter: z.record(z.any()).optional().describe("Filter conditions (e.g., agent_id, create_time, info fields) with logical/comparison ops."),
     knowledgebase_ids: z.array(z.string()).optional().describe("1) User says search ALL knowledge bases OR asks to search KBs without giving an ID -> you MUST pass [\"all\"]. 2) User gives specific KB IDs -> pass those IDs array. 3) User doesn't mention knowledge bases at all -> OMIT THIS PARAMETER (empty)."),
     include_preference: z.boolean().optional().describe("Enable preference memory recall. Default: true."),
@@ -561,7 +571,7 @@ server.tool(
           user_id: process.env.MEMOS_USER_ID,
           conversation_id: actualConversationId,
           feedback_content,
-          agent_id,
+          agent_id: agent_id || MEMOS_AGENT_ID,
           app_id,
           feedback_time,
           allow_public,
