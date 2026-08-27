@@ -97,14 +97,11 @@ Use retrieved memories **only if relevant**. If none are relevant, answer normal
 - **Purpose**: PRIMARY tool for recording **NEW facts/information** and persisting conversation history for future personalization.
 - **Rule**: If the user provides new information or wants to "remember" something new, use this. Do NOT use \`add_feedback\` for new additions.
 
-### 4) 🔄 Update/Correct/Delete Memory (User-triggered ONLY)
-- **Trigger**: User requests to **modify, update, correct, or delete** a memory.
-- **Workflow for Deletion (No ID provided)**:
-    1. 🔍 **Search**: Call \`search_memory\` to find the relevant memory IDs.
-    2. 🗑️ **Delete**: Call \`delete_memory\` with the IDs found.
-    3. 📝 **Feedback**: Call \`add_feedback\` to confirm deletion and prevent future recurrence.
-- **Workflow for Modification**:
-    - Use \`add_feedback\` to describe the correction.
+### 4) 🔄 Update/Correct Memory (User-triggered ONLY)
+- **Trigger**: User requests to **modify, update, or correct** a memory.
+- **Workflow for Correction**:
+    1. 📝 **Feedback**: Call \`add_feedback\` with the user's natural language intent (e.g., "User wants to change their preferred color from blue to red"). 
+    2. Do NOT include technical IDs or metadata in the feedback content.
 - **Rule**: Never use these tools for adding new information (use \`add_message\` instead).
 
 ### 5) 👤 Holistic context & Knowledge Management (User-triggered)
@@ -454,80 +451,21 @@ server.tool(
   }
 )
 
-
-server.tool(
-  "delete_memory",
-  `
-  Trigger: User explicitly asks to delete memories.
-  Purpose: Delete memories by ID.
-  STRICT RULES:
-    1. **PREREQUISITE**: If the user did NOT provide IDs, you MUST call \`search_memory\` first to find them.
-    2. **BATCHING**: If multiple IDs are provided (or found), call this tool ONCE with all IDs.
-    3. **WORKFLOW**: After successful deletion, you MUST call \`add_feedback\` to record the deletion intent.
-    4. FORBIDDEN: Do NOT call multiple times. Do NOT enter search-delete loops.
-    5. CRITICAL: NEVER use this tool to "simulate" a modification (delete old + add new). This is strictly forbidden.
-  Parameters:
-    - \`memory_ids\`: List of memory IDs to delete.
-  `,
-  {
-    memory_ids: z.array(z.string()).describe("List of memory IDs to delete")
-  },
-  async ({ memory_ids }: { memory_ids: string[] }) => {
-    try {
-      if (!process.env.MEMOS_API_KEY) {
-        throw new Error("MEMOS_API_KEY is not set, please set it in the environment variables or mcp.json file");
-      }
-
-      if (!process.env.MEMOS_USER_ID) {
-        throw new Error("MEMOS_USER_ID is not set, please set it in the environment variables or mcp.json file");
-      }
-
-      if (!candidateChannelId.includes(MEMOS_CHANNEL_ID)) {
-        throw new Error("Unknown channel: " + MEMOS_CHANNEL_ID);
-      }
-
-
-
-      const data = await queryMemos(
-        "/delete/memory",
-        {
-          user_ids: [process.env.MEMOS_USER_ID],
-          memory_ids
-        },
-        process.env.MEMOS_API_KEY,
-        MEMOS_CHANNEL_ID
-      );
-
-      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
-    } catch (e) {
-      return {
-        content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : "Unknown error"}` }],
-        isError: true
-      };
-    }
-  }
-)
-
-
-
 server.tool(
   "add_feedback",
   `
-  Trigger: User wants to MODIFY/UPDATE memories, OR as the final step of a DELETION workflow.
-  Purpose: Modify existing memories or record deletion feedback.
+  Trigger: User wants to MODIFY/UPDATE memories with natural language intent.
+  Purpose: Soft-update/correct existing memories.
   STRICT RULES:
-    1. **MODIFICATION**: Use this tool directly for soft updates/corrections.
-    2. **DELETION**: Use this tool AFTER calling \`delete_memory\` to verify/log the deletion.
-       - **CRITICAL**: The content MUST be the **User's Natural Language Intent** (e.g., "User wants to delete memories about X"). 
-       - **FORBIDDEN**: Do NOT include technical details like "IDs [x, y]" in the content.
-    3. CONTENT: \`feedback_content\` MUST be clear user intent.
+    1. **MODIFICATION**: Use this tool directly for corrections. State the user's intent clearly and naturally.
+    2. CONTENT: \`feedback_content\` MUST be clear user intent.
        - FORBIDDEN: Adding non-user-intent info or verbose narratives.
        - FORBIDDEN: Looking up old memory values to construct a "Change X to Y" request. Just say "User wants Y".
-    4. RETRY POLICY: FIRE AND FORGET. Call this tool ONCE.
+    3. RETRY POLICY: FIRE AND FORGET. Call this tool ONCE.
        - FORBIDDEN: Checking if it worked (searching again).
        - FORBIDDEN: Retrying if it "failed".
        - FORBIDDEN: Sleeping and searching.
-       - CRITICAL: If modification seemingly fails, DO NOT attempt to "fix" it by calling \`delete_memory\` and \`add_message\`. Just stop.
+       - CRITICAL: If modification seemingly fails, DO NOT attempt to "fix" it. Just stop and report.
   Parameters:
     - \`conversation_first_message\`: Used to generate the conversation_id.
     - \`feedback_content\`: The natural language update or feedback (no IDs or technical metadata).

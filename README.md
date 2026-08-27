@@ -65,13 +65,8 @@ This package provides the following MCP tools:
      - `conversation_first_message`: First user message in the thread (used to generate conversation_id).
      - `memory_limit_number`: Maximum number of memories that can be recalled. Default: 9, max 25.
 
-3. `delete_memory`
-   - Delete specific memories by their IDs.
-   - Parameters:
-     - `user_ids`: List of user IDs whose memories will be deleted.
-     - `memory_ids`: List of memory IDs to delete.
 
-4. `add_feedback`
+3. `add_feedback`
    - Submit user feedback to the MemOS system.
    - Note: Feedback is applied asynchronously — `add_feedback` returns immediately (often with a `task_id`), and the effect may take a short time to appear.
    - Parameters:
@@ -84,7 +79,7 @@ This package provides the following MCP tools:
      - `allow_public`: (Optional) Whether to allow public access (default: false).
      - `allow_knowledgebase_ids`: (Optional) List of knowledge base IDs allowed to be written to.
 
-5. `get_user_profile`
+4. `get_user_profile`
    - Get the user's full memory profile (facts, preferences, and tool trajectories).
    - Parameters:
      - `include_preference`: (Optional) Whether to include preference memories.
@@ -92,7 +87,7 @@ This package provides the following MCP tools:
      - `current`: (Optional) Page number.
      - `size`: (Optional) Number of entries per page.
 
-6. `create_knowledge_base`
+5. `create_knowledge_base`
    - Create a named knowledge base container.
    - Parameters:
      - `knowledgebase_name`: Name of the knowledge base.
@@ -103,7 +98,7 @@ This package provides the following MCP tools:
    - Parameters:
      - `knowledgebase_id`: Target knowledge base ID.
 
-8. `add_kb_document`
+7. `add_kb_document`
    - Upload document(s) to a specified knowledge base.
    - Parameters:
      - `knowledgebase_id`: Target knowledge base ID.
@@ -112,12 +107,12 @@ This package provides the following MCP tools:
        - `file_name`: (Optional) File name.
        - `mime_type`: (Optional) MIME type. Required when `content` is a local file path.
 
-9. `get_kb_documents`
+8. `get_kb_documents`
    - Get document metadata in batches by file IDs.
    - Parameters:
      - `file_ids`: List of document IDs.
 
-10. `delete_kb_documents`
+9. `delete_kb_documents`
    - Delete specified documents from the knowledge base by file IDs.
    - Parameters:
      - `file_ids`: List of document IDs.
