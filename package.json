@@ -4,7 +4,7 @@
   "description": "MemOS custom MCP server (token-optimized, Chinese descriptions)",
   "type": "module",
   "bin": {
-    "memos-mcp-custom": "build/index.js"
+    "memos-mcp-custom": "bin/memos-mcp-custom.js"
   },
   "scripts": {
     "start": "node build/index.js"
